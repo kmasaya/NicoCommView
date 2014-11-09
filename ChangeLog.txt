@@ -1,0 +1,83 @@
+2011-03-02  Katou Masaya  <chiaki367@gmail.com>
+
+	* NicoCommView.py: New - コミュニティIDでも放送に接続できるようにする
+	* NicoCommView.py: Bug - コメントIDが存在しない放送でコメントのコピーを行えない
+	* NicoSessionId.py: Mod - Firefox起動中もFirefoxクッキーを利用してログイン出来るように
+	* NicoCommView.py: New - NGワード送信時にエスケープを行う
+	* NicoCommView.py: Mod - コメントを折り返して表示する
+	* NicoCommView.py: Mod - ニックネーム自動登録をいわゆる全角@文字でできるようにする
+	* NicoCommView.py: Mod - ニックネーム登録時に既存のニックネームを自動入力する
+	* NicoCommView.py: Bug - NGコメントが存在する際にルールヒント表示がずれる
+	* NicoCommView.py: New - ニックネーム設定時に自動でツリーを更新する
+	* NicoCommView.py: New - 放送ID入力欄でEnterを入力すると放送に接続する
+	* NicoCommView.py: New - ニックネーム登録時に入力欄でEnterを入力するとOK動作とする
+	* NicoCommView.py: Mod - NGコメントをNGコメント数分表示する
+	* NicoCommView.py: Mod - 時刻の計算方法の変更
+	* NicoCommView.py: New - 放送IDをブラウザからのドラッグで設定を行えるようにする
+	* NicoCommView.py: Mod - ステータスをアイコンで表示する
+	* NicoCommView.py: Bug - コメント送信時にコメントをHTMLエスケープする
+
+
+2011-02-24  Katou Masaya  <chiaki367@gmail.com>
+
+	* NicoCommView.py: Mod - 全体的な修正
+	Version 0.3の修正をするに当たって、いきあたりばったりで書かれていたコードを整理
+	・放送ID入力欄に放送ID以外の文字列が貼りつけられたときに放送IDを抽出するように変更
+	・コメントのHTMLエスケープ文字を案エスケープして表示するように変更
+	・NCVのデフォルトUAを変更
+	・放送のコメント時間を最大で6時間まで対応するように変更
+	・Firefoxのクッキーをより安全に取得するように変更
+	・ブラウザのプロファイルを設定できるように変更
+	・ログインエラー時に接続を停止するように変更
+	・NGコメントがあるときにNGコメントの存在を表示するように変更
+	・クッキーのセッションIDを利用せずにnetrcを用いたログインを出来るように変更
+	・コメント投稿のモディファイアキーの設定を出来るように変更
+	・184チェックボックスのデフォルト値を設定できるように変更
+	・クリックすべきでないボタンをクリックできないように変更
+
+	* NicoCommView.py: Bug - コメント受信時にパケットがかけていた
+	コメントのバッファリング時にバッファリングマイに最終1bitがかけていたのを修正
+	1bitでnull文字を除去していたルーチンから変更を行なった際に、null文字の除去方法の修正が漏れていた
+
+2011-02-24  Katou Masaya  <chiaki367@gmail.com>
+
+	* Setting.py: Mod - 設定の改善
+	設定情報の保持と設定を改善
+
+	* NicoSessionId.py: Mod - セッションID取得ルーチンの変更
+	ブラウザ別に最適な処理の選択とプロファイルを意識したルーチンに変更
+
+	* Cookie2NicoSessionId.py: Mod - ファイル名の変更と移動
+	NicoSesionId.pyに名称を変更し、modulesディレクトリに移動
+
+	* Setting.py: New - 設定をクラスに分ける
+	Settingクラスをモジュール(Setting.py)に分割
+
+	* modules/: New - モジュールディレクトリの作成
+	モジュールを格納するディレクトリとして、./modules/を作成
+
+2011-02-13  Katou Masaya  <chiaki367@gmail.com>
+
+	* ChangeLog.txt: New - ChangeLog.txtファイルを追加
+	今後の修正はChangeLog.txtに記載する
+
+	* NicoCommView.py: Bug - コンテキストメニューよりURIが開けないバグ修正
+	URIを抽出する正規表現を修正
+
+	* NicoCommView.py: Bug - コメントが1件も無い放送に接続すると初回コメントまで固まる
+	ソケットからChatコマンドが来るまでループをしていたが、Threadのみでもループを抜けるように修正
+
+	* NicoCommView.py: Bug - 空文字列にてコメントが送信できる
+	未入力時にコメントを送信しないように修正
+
+	* NicoCommView.py: New - コメントの投稿を投稿ボタンの他にM-Enterにバインド
+	キーボードにてコメントを行えるように
+
+	* NicoCommView.py: Bug - 再接続時にコメントログがクリアされない
+	再接続時にコメントリストとコメントポインタの初期化が漏れていたので修正
+
+	* Cookie2NicoSessionId.py: Mod - クッキーファイルの取得を自動っぽく
+	フルパスをユーザに入力させていたがブラウザのクッキーファイル初期位置を組み込み
+
+	* Cookie2NicoSessionId.py: New - Firefox暫定対応
+	Defaultプロファイルを取得するように実装
