@@ -1,10 +1,8 @@
-#!/usr/bin/python
-# -*- coding: utf-8 -*-
+#!/usr/bin/python2
+# coding: utf-8
 
 import os
-import sys
 import time
-import pickle
 import socket
 import re
 import urllib
@@ -13,1444 +11,902 @@ import netrc
 from xml.dom import minidom
 import gobject
 import cookielib
-from modules.Setting import Setting
-from modules.NicoSessionId import NicoSessionId
-from modules.NgCommentDict import NgCommentDict
-import pygtk
 import gtk
+
+from lib.DBInitialize import DBInitialize
+from lib.GetBrowserSessionId import GetBrowserSessionId
+from lib.NgCommentDict import ng_comments
+from dialog.NicknameSettingDialog import NicknameSettingDialog
+from Setting import ICON_DIR, NICO_LOGIN_URL, DB, DEBUG
+
+
+def debug(debug_print):
+    if DEBUG:
+        print debug_print
+
+
+def str2html_escape(raw_str):
+    return raw_str.replace(r'&', '&amp;').replace(r'<', '&lt;').replace(r'>', '&gt;').replace(r'\"', '&quote;')
+
+
+def str2html_unescape(comment):
+    return comment.replace("&lt;", r"<").replace("&gt;", r">").replace("&quote;", r"\"").replace("&amp;", r"&")
 
 
 class Live:
-    """
-    ニコ生関連クラス    
-    """
-
     # 接続用
-    opener        = None  # Opner
-    sock          = None  # ソケット
+    opener = None  # Opener
+    socket = None  # ソケット
+
     # ニコ生用
-    addr          = None  # コメントサーバのURI
-    port          = None  # コメントサーバポート番号
-    thread        = None  # コメントのスレッドID
-    user_id       = None  # ユーザID
-    user_premium  = None  # ユーザがプレミアか (0:一般 1:プレミア 3:放送主
-    base_time     = None  # コメント基礎時間
+    comment_server_address = None  # コメントサーバのURI
+    comment_server_port = None  # コメントサーバポート番号
+    comment_thread_id = None  # コメントのスレッドID
+    comment_basetime = None  # コメント基礎時間
     comment_count = None  # 現在のコメント数
-    ticket        = None  # チケット番号
-    postkey       = None  # コメントのポストキー
-    vpos          = None  # Vpos
+
+    user_id = None  # ユーザID
+    user_premium = None  # ユーザがプレミアか (0:一般 1:プレミア 3:放送主
+    ticket = None  # チケット番号
+    vpos = None  # Vpos
+
     # ユーザ設定
-    anonymity     = None  # 匿名 # 184(匿名(コメント時184でコメント))
-    comList       = None  # コメントリスト
-    connect       = None  # 放送接続フラグ
+    anonymity = None  # 匿名 # 184(匿名(コメント時184でコメント))
+    comments = []  # コメントリスト
+    connecting = False  # 放送接続フラグ
 
-    def __init__( self, liveUri, sessionId):
-        """
-        コンストラクタ
+    live_page_title = None
 
-        引数:
-        liveid    - 放送のID (lv*
-        sessionId - クッキーに保存されているセッションID
-        返し値:
-        
-        """
-        # 初期値の設定
-        self.comList = [] 
-        cj           = self.MakeCookie( sessionId)
-        self.opener  = self.MakeOpener( cj)
+    def __init__(self, live_uri, session_id):
+        self.set_opener(session_id)
 
         # セッションIDが空ならnetrcから接続情報を読み込みログインを行う
-        if sessionId == "":
-            #DEBUG TODO netrc読み込み時の例外
-            #DEBUG TODO ログイン時の例外
+        if not session_id:
+            # TODO netrc読み込み時の例外
+            # TODO ログイン時の例外
             info = netrc.netrc().authenticators('nicovideo')
             mail = info[0]
             password = info[2]
-            self.MakeSession( mail, password)
+            self.make_session(mail, password)
 
-        # プレーヤステータスを取得
-        data = self.ReadUri( liveUri)
-        
-        # 放送が存在していれば接続
-        if self.CheckLiveId( data):
-            self.PlayerStatus2Status( data)
-            self.SocketConnect()
-            self.MakeVpos()
-            # 放送接続フラグを立てる
-            self.connect = True
-        # 存在していなければ
-        else:
-            # 放送未接続フラグを立てる
-            self.connect = False
-            
-    def __del__( self):
-        """
-        デストラクタ
-        
-        引数:
-        
-        返し値:
-        
-        """
-        pass
-    
-    def MakeCookie( self, sessionId = ""):
-        """
-        クッキーの設定
+        self.live_connect(live_uri)
 
-        引数:
-        sessionId - セッションID
-        返し値:
-         - cj
+    def live_connect(self, live_uri):
         """
-        # クッキーの作成と設定
-        cj = cookielib.CookieJar()
-        
-        # セッションIDが渡されていればセット
-        if not sessionId == "":
-            ck = cookielib.Cookie(
-                version            = 0,
-                name               = 'user_session',
-                value              = sessionId,
-                port               = None,
-                port_specified     = False,
-                domain             = '.nicovideo.jp',
-                domain_specified   = False,
-                domain_initial_dot = False,
-                path               = '/',
-                path_specified     = True,
-                secure             = False,
-                expires            = None,
-                discard            = True,
-                comment            = None,
-                comment_url        = None,
-                rest               = {'HttpOnly': None},
-                rfc2109            = False
-                )
-            cj.set_cookie( ck)    
-
-        return cj
-
-    def MakeOpener( self, cj, ua = "NicoCommView"):
+        放送が存在していれば接続
         """
-        オープナの作成
+        def parse_live_title(dom):
+            """
+            放送タイトル
+            """
+            title = dom.getElementsByTagName('title')[0].firstChild.data.strip()
 
-        引数:
-        cj - CookieJar
-        ua - UsearAgent (NicoCommView
-        戻し値:
-         - opener
-        """
+            return title
 
-        # オープなの設定
-        opener = urllib2.build_opener( urllib2.HTTPCookieProcessor( cj))
-        opener.addheaders = [( "User-agent", ua)]
-        
-        return opener
-    
-    def MakeSession( self, mail, password):
-        """
-        ニコニコ動画にログインを行う
-        
-        引数:
-        mail     - ユーザ名
-        password - パスワード
-        返し値:
-         - opener 
-        """
-        
-        # ログイン
-        req = urllib2.Request( 'https://secure.nicovideo.jp/secure/login?site=niconico');
-        account = { "mail": mail, "password": password}
-        req.add_data( urllib.urlencode( account.items()))
-        self.opener.open( req)
-    
-    def ReadUri( self, uri):
-        """
-        URIの内容を読み込みソースを返す
+        def parse_live_status(dom):
+            """
+            放送状態
+            """
+            status = dom.getElementsByTagName('getplayerstatus')[0].getAttribute("status")
 
-        引数:
-        uri - 読み込みを行うURI
-        戻し値:
-         - URIのソースを返す 
-        """
+            if status == "ok":
+                return True
+            else:
+                return False
 
-        # URIのオープン
-        return self.opener.open( uri).read()
+        def parse_player_status(dom):
+            """
+            放送ステータス
+            """
+            # XXX
+            child = dom.getElementsByTagName('getplayerstatus')[0]
+            if child.getElementsByTagName('ms'):
+                ms_dom = child.getElementsByTagName('ms')[0]
+                # コメントサーバURI
+                self.comment_server_address = ms_dom.getElementsByTagName('addr')[0].firstChild.data.strip()
+                # コメントサーバポート番号
+                self.comment_server_port = int(ms_dom.getElementsByTagName('port')[0].firstChild.data.strip())
+                # コメントのスレッドID
+                self.comment_thread_id = ms_dom.getElementsByTagName('thread')[0].firstChild.data.strip()
+            if child.getElementsByTagName('user'):
+                user_dom = child.getElementsByTagName('user')[0]
+                # ユーザID
+                self.user_id = user_dom.getElementsByTagName('user_id')[0].firstChild.data.strip()
+                # ユーザがプレミアかどうか(0:一般 1:プレミアム
+                self.user_premium = user_dom.getElementsByTagName('is_premium')[0].firstChild.data.strip()
+            if child.getElementsByTagName('stream'):
+                stream_dom = child.getElementsByTagName('stream')[0]
+                # コメントの基礎時間
+                self.comment_basetime = stream_dom.getElementsByTagName('base_time')[0].firstChild.data.strip()
+                # 現在のコメント数
+                self.comment_count = int(stream_dom.getElementsByTagName('comment_count')[0].firstChild.data.strip())
 
-    def CheckLiveId( self, data):
-        """
-        存在する放送か確認
-        
-        引数:
-        data - 放送XML
-        返し値:
-        True  - 存在する
-        False - 存在しない
-        """
-        # XMLから値の抜き出し
-        xml = minidom.parseString( data)
-        child = xml.getElementsByTagName( 'getplayerstatus')[0]
-        # ステータスを取得する
-        status = child.getAttribute( "status")
-        
-        # ステータスがOKなら放送が存在する
-        if status == "ok":
-            return True
-        else:
-            return False
+        live_page_dom = minidom.parseString(self.opener.open(live_uri).read())
+        self.live_page_title = parse_live_title(live_page_dom)
 
-    def SocketConnect( self):
-        """
-        ソケットに接続をする
+        if parse_live_status(live_page_dom):
+            parse_player_status(live_page_dom)
+            self.socket_connect()
+            self.vpos = int((time.time() - float(self.comment_basetime)) * 100)
+            self.connecting = True
 
-        引数:
-        
-        返し値:
-        
-        """
-        # ソケットに接続
-        liveSocket = socket.socket( socket.AF_INET, socket.SOCK_STREAM)
-        liveSocket.connect( ( self.addr, int( self.port)))
-        
-        self.sock = liveSocket
-        
-    def SocketDisconnect( self):
-        """
-        ソケットの切断する
-        
-        引数:
-        
-        返し値:
-        
-        """
+    def set_opener(self, session_id, ua='NicoCommView'):
+        cookie_jar = cookielib.CookieJar()
 
-        # ソケットの切断
-        self.sock.close()
+        if session_id:
+            ck = cookielib.Cookie(version=0, name='user_session', value=session_id, port=None, port_specified=False,
+                                  domain='.nicovideo.jp', domain_specified=False, domain_initial_dot=False, path='/',
+                                  path_specified=True, secure=False, expires=None, discard=True, comment=None,
+                                  comment_url=None, rest={'HttpOnly': None}, rfc2109=False)
+            cookie_jar.set_cookie(ck)
 
-    def PlayerStatus2Status( self, data):
-        """
-        XMLより放送ステータスの抽出をする
+        self.opener = urllib2.build_opener(urllib2.HTTPCookieProcessor(cookie_jar))
+        self.opener.addheaders = [("User-agent", ua)]
 
-        引数:
-        data - ニコ生のプレーヤステータスXML
-        返し値:
-        
-        """
-        # XMLから値の抜き出し
-        xml = minidom.parseString( data)
-        child = xml.getElementsByTagName( 'getplayerstatus')[0]
-        if child.getElementsByTagName( 'ms'):
-            mstag = child.getElementsByTagName( 'ms')[0]
-            # コメントサーバURI
-            self.addr = mstag.getElementsByTagName( 'addr')[0].firstChild.data.strip()
-            # コメントサーバポート番号
-            self.port = mstag.getElementsByTagName( 'port')[0].firstChild.data.strip()
-            # コメントのスレッドID
-            self.thread = mstag.getElementsByTagName( 'thread')[0].firstChild.data.strip()
-        if child.getElementsByTagName('user'):
-            usertag = child.getElementsByTagName( 'user')[0]
-            # ユーザID
-            self.user_id = usertag.getElementsByTagName( 'user_id')[0].firstChild.data.strip()
-            # ユーザがプレミアかどうか(0:一般 1:プレミアム
-            self.user_premium = usertag.getElementsByTagName( 'is_premium')[0].firstChild.data.strip()
-        if child.getElementsByTagName( 'stream'):
-            streamtag = child.getElementsByTagName( 'stream')[0]
-            # コメントの基礎時間
-            self.base_time = streamtag.getElementsByTagName( 'base_time')[0].firstChild.data.strip()
-            # 現在のコメント数
-            self.comment_count = streamtag.getElementsByTagName( 'comment_count')[0].firstChild.data.strip()
-        
-    def GetTicket( self):
-        """
-        チケットのリクエストと過去のコメント1000件(最大値)のリクエストを行う
+    def make_session(self, mail, password):
+        request = urllib2.Request(NICO_LOGIN_URL)
+        account = {"mail": mail, "password": password}
+        request.add_data(urllib.urlencode(account.items()))
+        self.opener.open(request)
 
-        引数:
-        
-        返し値:
-        """
-        # チケット取得のXML作成
-        sendXml = '<thread thread="%s" version="20061206" res_from="-1000" />\0' % ( self.thread)
-        
-        # XMLをソケットに送信
-        self.sock.send( sendXml)
-        
-    def GetPostkey( self):
-        """
-        コメント投稿用の鍵を取得(コメント100件毎に必要
+    def socket_connect(self):
+        self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.socket.connect((self.comment_server_address, self.comment_server_port))
 
-        引数:
-        
-        返し値:
-        
-        """
-        # Postkey取得用のURLを生成
-        uri = "http://live.nicovideo.jp/api/getpostkey?thread=%s&block_no=%d" % ( self.thread, int( int( self.comment_count) / 100))
+    def socket_disconnect(self):
+        self.socket.close()
 
-        # Postkey取得用のURLからPostkey文字列を取得
-        data = self.opener.open( uri)
-        key  = data.read()
+    def set_ticket(self):
+        send_xml_tag = '<thread thread="%s" version="20061206" res_from="-1000" />\0' % (self.comment_thread_id,)
+        self.socket.send(send_xml_tag)
 
-        # Postkey文字列からPostkeyの部分だけセット
-        self.postkey = key.replace( "postkey=", "")
-
-    def GetComment( self):
-        """
-        コメントを取得しユーザ情報を返す
-
-        引数:
-
-        戻し値:
-
-        """
-
+    def get_comment(self):
         # ソケットデータを受信する(終端がコメントの終(</chat>)になるまで
-        socketData = ""
-        pattern = re.compile( r'<thread[^>]+>$')
+        socket_data = ''
+        pattern = re.compile(r'<thread[^>]+>$')
         while True:
-            socketData += self.sock.recv( 4096).replace( "\0", "")
-            if socketData[-7:] == "</chat>" or len( pattern.findall( socketData)) != 0:
+            socket_data += self.socket.recv(4096).replace('\0', '')
+            if socket_data.endswith('</chat>') or len(pattern.findall(socket_data)) != 0:
                 break
-        
+
+        debug(socket_data)
+
         # コメントを送信した時の結果を破棄
-        socketData = re.sub(r'<chat_result[^>]+>', '', socketData)
+        socket_data = re.sub(r'<chat_result[^>]+>', '', socket_data)
+
         # 改行を破棄
-        socketData = socketData.replace( "\r", "").replace( "\n", "") 
-        
+        socket_data = socket_data.replace('\r', '').replace('\n', '')
+
         # チケットを設定
-        ticket = re.sub(r'<thread[^>]*ticket="([0-9A-Za-z-_]{1,})".*', r'\1', socketData)
+        ticket = re.sub(r'<thread[^>]*ticket="([0-9A-Za-z-_]+)".*', r'\1', socket_data)
         # チケットを受信すれば(15文字以上なら未受信
-        if len( ticket) < 15:
+        if len(ticket) < 15:
             self.ticket = ticket
             # チケット文字列を破棄
-            socketData = re.sub(r'<thread[^>]+>', '', socketData)
+            socket_data = re.sub(r'<thread[^>]+>', '', socket_data)
 
         # コメントから情報を抜き出す
-        for line in socketData.split( r"</chat>"):
+        for line in socket_data.split(r"</chat>"):
             # 行が5文字以下なら次へ(<chat>で５文字を超える
-            if len( line) < 5:
+            if len(line) < 5:
                 continue
             # スプリットした文字列を復帰
-            line = line + "</chat>"
+            line += '</chat>'
 
             # コメント
             comment = re.sub(r'</?chat[^>]*>', '', line)
             # コメントナンバー
-            comNumber = re.sub(r'<chat[^>]*no="([0-9]{1,})".*', r'\1', line)
+            comment_number = re.sub(r'<chat[^>]*no="([0-9]+)".*', r'\1', line)
             # コメントナンバーがなければ0に
-            if comNumber == line:
-                comNumber = "0"
+            if comment_number == line:
+                comment_number = "0"
             # コメントユーザ
-            comUser = re.sub(r'<chat[^>]*user_id="([0-9a-zA-Z-_]{1,})".*', r'\1', line)
+            comment_user = re.sub(r'<chat[^>]*user_id="([0-9a-zA-Z-_]+)".*', r'\1', line)
             # コメントユーザがいなければ運営に
-            if comUser == line:
-                comUser = "394"
+            if comment_user == line:
+                comment_user = "394"
             # コメント時間
-            comTime = re.sub(r'<chat[^>]*date="([0-9]{1,})".*', r'\1', line)
+            comment_time = re.sub(r'<chat[^>]*date="([0-9]+)".*', r'\1', line)
             # コメントユーザがプレミアか
-            comPremium = re.sub(r'<chat[^>]*premium="([0-9]{1})".*', r'\1', line)
+            comment_premium = re.sub(r'<chat[^>]*premium="([0-9])".*', r'\1', line)
             # プレミアムじゃなければ一般に
-            if comPremium == line:
-                comPremium = "0"
- 
-            self.comList.append( [ comNumber, comUser, comment, comPremium, comTime])
-            self.comment_count = comNumber
+            if comment_premium == line:
+                comment_premium = "0"
 
-    def MakeVpos( self):
-        """
-        vposの値を計算
+            self.comments.append([comment_number, comment_user, comment, comment_premium, comment_time])
+            self.comment_count = int(comment_number)
 
-        引数:
+    def post_comment(self):
+        uri = 'http://live.nicovideo.jp/api/getpostkey?thread=%s&block_no=%d' % (self.comment_thread_id, self.comment_count/100)
+        key = self.opener.open(uri).read()
+        postkey = key.split('=')[-1]
 
-        返し値:
-
-        """
-        # VPOSを計算
-        self.vpos = int( ( time.time() - float( self.base_time)) * 100)        
-  
-    def PostComment( self):
-        """
-        コメントの投稿
-
-        引数:
-        
-        返し値:
-        
-        """
-        # Postkeyの更新
-        self.GetPostkey()
-        
-        # コメント投稿XMLを生成
-        commentXml = u'<chat thread="%s" ticket="%s" vpos="%s" postkey="%s" %s user_id="%s" premium="%s">%s</chat>\0' % ( self.thread, self.ticket, self.vpos, self.postkey, self.anonymity, self.user_id, self.user_premium, self.Str2HtmlEscape( self.comment))
-
-        # コメントXMLを送信
-        self.sock.send( commentXml)
-
-    def Str2HtmlEscape( self, str):
-        """
-        文字列をHTMLエスケープする
-        
-        引数:
-        str - エスケープする文字列
-        返し値:
-         - エスケープした文字列
-        """
-        
-        return str.replace( r"&", "&amp;").replace( r"<", "&lt;").replace( r">", "&gt;").replace( r"\"", "&quote;")
+        comment_xml_tag = u'<chat thread="%s" ticket="%s" vpos="%s" postkey="%s" %s user_id="%s" premium="%s">%s</chat>\0' % (self.comment_thread_id, self.ticket, self.vpos, postkey, self.anonymity, self.user_id, self.user_premium, str2html_escape(self.comment))
+        self.socket.send(comment_xml_tag)
 
 
-    
 class WinCom:
-    """
-    GUI制御クラス
-    """
-
     # メインウインドウ
-    mainWindow = None
+    main_window = None
+    main_notebook = None
+    tab_live_label = None
+    comment_tree = None
+    comment_tree_column_comment_width = None
+    comment_tree_column_comment_render_text = None
+    comment_tree_column_comment = None
+    comment_tree_scroll = None
+    live_connect_url_entry = None
+    live_connect_enter_button = None
+    live_connect_disconnect_enter_button = None
+    live_connect_reconnect_enter_button = None
+    comment_enter_184_checkbutton = None
+    comment_enter_entry = None
+    comment_enter_button = None
+    comment_tree_context_menu = None
+    setting_nickname_overwrite_checkbox = None
+    setting_nickname_num_overwrite_checkbox = None
+    setting_ownerbgcolor_change_checkbox = None
+    setting_ownerbgcolor_change_color_entry = None
+    setting_openlinkbrowser_entry = None
+    setting_comment_enter_default_184_checkbox = None
+    setting_hide_control_comment = None
+    setting_comment_enter_modifier_conbobox = None
+    setting_cookiebrouser_conbobox = None
+    clipboard = None
     # 放送インスタンス
-    live       = None
-    # 設定インスタンス
-    setting    = None
+    live = None
     # コメントリストの最終ポインタ
-    curListNum = None
+    current_list_number = None
     # コメントの前番号
-    beforeNo   = None
+    before_number = None
     # Treeview行番号
-    iter       = None
-   
-    def __init__(self, setting):
-        """
-        コンストラクタ
-        
-        引数:
-        
-        返し値:
-        
-        """
+    tree_iterator = None
+    db = None
+
+    def __init__(self):
+        self.db = DB
         # リストポインタを初期化
-        self.curListNum = 0
-
+        self.current_list_number = 0
         # 行番号の初期化
-        self.iter = 1
-
-        # 設定の初期化
-        self.setting = setting
-
+        self.tree_iterator = 1
         # ウインドウの初期化
-        self.WindowInitialize()                
-
+        self.main_window_initialize()
         # 設定ウインドウに設定を適用
-        self.LoadSetting()
-        
-        # 固定ハンドル辞書の読み込み
-        self.LoadNickDictionaly()
-    
-    def __del__( self):
-        """
-        デストラクタ
-        
-        引数:
-        self
-        返し値:
-        
-        """
-        pass
-      
-    def WindowInitialize( self):
-        """
-        ウインドウの初期化
-        
-        引数:
-        
-        返し値:
-        
-        """
+        self.setting_load()
+
+    def main_window_initialize(self):
         # メインウインドウ
-        self.mainWindow = gtk.Window()
-        self.mainWindow.set_title( "NicoCommView")
-        self.mainWindow.connect( 'destroy_event', self.QuitWindow)
-        self.mainWindow.connect( 'delete_event', self.QuitWindow)
-        
+        self.main_window = gtk.Window()
+        self.main_window.set_title('NicoCommView')
+        self.main_window.connect('destroy_event', self.close_window)
+        self.main_window.connect('delete_event', self.close_window)
+
         # タブ
-        self.ntMain = gtk.Notebook()
+        self.main_notebook = gtk.Notebook()
         # タブ1
-        tbLive1Vbox  = gtk.VBox( homogeneous = False)
-        lbLive1Tab = gtk.Label( "Live1")
-        self.ntMain.append_page( tbLive1Vbox, lbLive1Tab)
-        
+        tab_live1_vbox = gtk.VBox(homogeneous=False)
+        self.tab_live_label = gtk.Label("Live1")
+        self.main_notebook.append_page(tab_live1_vbox, self.tab_live_label)
+
         # コメント表示ツリー
-        self.trCom = gtk.TreeView( model = gtk.ListStore( str, str,str, gtk.gdk.Pixbuf, str, str))
-        self.trCom.props.rules_hint = True
-        self.trCom.connect( 'size-allocate', self.ColumnResize)
-        self.trCom.connect( "button-press-event", self.TreePopup)
+        self.comment_tree = gtk.TreeView(model=gtk.ListStore(str, str, str, gtk.gdk.Pixbuf, str, str))
+        self.comment_tree.props.rules_hint = True
+        self.comment_tree.connect('size-allocate', self.comment_tree_column_resize)
+        self.comment_tree.connect("button-press-event", self.comment_tree_left_click)
         # コメント表示ツリーカラムナンバー
-        clNo = gtk.TreeViewColumn( "No", gtk.CellRendererText(), text = 0)
-        clNo.set_sizing( gtk.TREE_VIEW_COLUMN_FIXED) 
-        clNo.set_fixed_width( 50)
+        comment_tree_column_number = gtk.TreeViewColumn("No", gtk.CellRendererText(), text=0)
+        comment_tree_column_number.set_sizing(gtk.TREE_VIEW_COLUMN_FIXED)
+        comment_tree_column_number.set_fixed_width(50)
         # コメント表示ツリーカラムユーザ
-        self.clUserCrt = gtk.CellRendererText()
-        clUser = gtk.TreeViewColumn( "User", self.clUserCrt, text = 1, background = 5)
-        clUser.set_resizable( True) 
-        clUser.set_sizing( gtk.TREE_VIEW_COLUMN_FIXED) 
-        clUser.set_fixed_width( 80)
+        comment_tree_column_user_render_text = gtk.CellRendererText()
+        comment_tree_column_user = gtk.TreeViewColumn("User", comment_tree_column_user_render_text, text=1, background=5)
+        comment_tree_column_user.set_resizable(True)
+        comment_tree_column_user.set_sizing(gtk.TREE_VIEW_COLUMN_FIXED)
+        comment_tree_column_user.set_fixed_width(80)
         # コメント表示ツリーカラムコメント
-        self.clComWidth = 380
-        self.clComCrt = gtk.CellRendererText()
-        self.clComCrt.set_property( "wrap-mode", True)
-        self.clComCrt.set_property( "wrap-width", self.clComWidth - 10)
-        self.clCom = gtk.TreeViewColumn( "Comment", self.clComCrt, text = 2)
-        self.clCom.set_resizable( True) 
-        self.clCom.set_sizing( gtk.TREE_VIEW_COLUMN_FIXED) 
-        self.clCom.set_fixed_width( self.clComWidth)
-        # コメント表示ツリーステータス        
-        clStat = gtk.TreeViewColumn( "S", gtk.CellRendererPixbuf(), pixbuf = 3)
-        clStat.set_sizing( gtk.TREE_VIEW_COLUMN_FIXED) 
-        clStat.set_fixed_width( 24)
+        self.comment_tree_column_comment_width = 380
+        self.comment_tree_column_comment_render_text = gtk.CellRendererText()
+        self.comment_tree_column_comment_render_text.set_property("wrap-mode", True)
+        self.comment_tree_column_comment_render_text.set_property("wrap-width", self.comment_tree_column_comment_width-10)
+        self.comment_tree_column_comment = gtk.TreeViewColumn("Comment", self.comment_tree_column_comment_render_text, text=2)
+        self.comment_tree_column_comment.set_resizable(True)
+        self.comment_tree_column_comment.set_sizing(gtk.TREE_VIEW_COLUMN_FIXED)
+        self.comment_tree_column_comment.set_fixed_width(self.comment_tree_column_comment_width)
+        # コメント表示ツリーステータス
+        comment_tree_column_status = gtk.TreeViewColumn("S", gtk.CellRendererPixbuf(), pixbuf=3)
+        comment_tree_column_status.set_sizing(gtk.TREE_VIEW_COLUMN_FIXED)
+        comment_tree_column_status.set_fixed_width(24)
         # コメント表示ツリータイム
-        clTime = gtk.TreeViewColumn( "Time", gtk.CellRendererText(), text = 4)
-        clTime.set_sizing( gtk.TREE_VIEW_COLUMN_FIXED)
-        clTime.set_fixed_width( 50)
+        comment_tree_column_time = gtk.TreeViewColumn("Time", gtk.CellRendererText(), text=4)
+        comment_tree_column_time.set_sizing(gtk.TREE_VIEW_COLUMN_FIXED)
+        comment_tree_column_time.set_fixed_width(50)
         # ツリーにカラムを追加
-        self.trCom.append_column( clNo)
-        self.trCom.append_column( clUser)
-        self.trCom.append_column( self.clCom)
-        self.trCom.append_column( clStat)
-        self.trCom.append_column( clTime)
+        self.comment_tree.append_column(comment_tree_column_number)
+        self.comment_tree.append_column(comment_tree_column_user)
+        self.comment_tree.append_column(self.comment_tree_column_comment)
+        self.comment_tree.append_column(comment_tree_column_status)
+        self.comment_tree.append_column(comment_tree_column_time)
         # コメント表示ツリースクロール
-        self.scrTree = gtk.ScrolledWindow()
-        self.scrTree.set_policy( gtk.POLICY_AUTOMATIC, gtk.POLICY_AUTOMATIC)
-        self.scrTree.add( self.trCom)
+        self.comment_tree_scroll = gtk.ScrolledWindow()
+        self.comment_tree_scroll.set_policy(gtk.POLICY_AUTOMATIC, gtk.POLICY_AUTOMATIC)
+        self.comment_tree_scroll.add(self.comment_tree)
 
         # 放送接続
-        conHbox = gtk.HBox()
+        live_connect_url_hbox = gtk.HBox()
         # 放送ID入力ボックス
-        self.enLive = gtk.Entry()
-        self.enLive.connect( "activate", self.LiveEnter)
-        self.enLive.connect( "drag_data_received", self.LiveIdDrags)
+        self.live_connect_url_entry = gtk.Entry()
+        self.live_connect_url_entry.connect("activate", self.live_enter)
+        self.live_connect_url_entry.connect("drag_data_received", self.drags_live_id)
         # エントリへのドラッグ処理
-        self.enLive.drag_dest_set( gtk.DEST_DEFAULT_MOTION | gtk.DEST_DEFAULT_HIGHLIGHT | gtk.DEST_DEFAULT_DROP, [ ( 'text/uri-list', 0, 0),], gtk.gdk.ACTION_COPY)
+        self.live_connect_url_entry.drag_dest_set(gtk.DEST_DEFAULT_MOTION | gtk.DEST_DEFAULT_HIGHLIGHT | gtk.DEST_DEFAULT_DROP, [('text/uri-list', 0, 0), ], gtk.gdk.ACTION_COPY)
         # 放送接続ボタン
-        self.btLiveCon = gtk.Button( "接続")
-        self.btLiveCon.connect( "clicked", self.LiveConnect)
+        self.live_connect_enter_button = gtk.Button("接続")
+        self.live_connect_enter_button.connect("clicked", self.connect_live)
         # 放送切断ボタン
-        self.btLiveDis = gtk.Button( "切断")
-        self.btLiveDis.connect( "clicked", self.LiveDisconnect)
-        self.btLiveDis.set_sensitive( False)
-        # 放送再接続ボタン 
-        self.btLiveRe = gtk.Button( "再接続")
-        self.btLiveRe.connect( "clicked", self.LiveReconnect)
-        self.btLiveRe.set_sensitive( False)
+        self.live_connect_disconnect_enter_button = gtk.Button("切断")
+        self.live_connect_disconnect_enter_button.connect("clicked", self.disconnect_live)
+        self.live_connect_disconnect_enter_button.set_sensitive(False)
+        # 放送再接続ボタン
+        self.live_connect_reconnect_enter_button = gtk.Button("再接続")
+        self.live_connect_reconnect_enter_button.connect("clicked", self.reconnect_live)
+        self.live_connect_reconnect_enter_button.set_sensitive(False)
         # ボックス、ボタンの追加
-        conHbox.pack_start( self.enLive,    True, True)
-        conHbox.pack_start( self.btLiveCon, False, False)
-        conHbox.pack_start( self.btLiveDis, False, False)
-        conHbox.pack_start( self.btLiveRe,  False, False)
+        live_connect_url_hbox.pack_start(self.live_connect_url_entry, True, True)
+        live_connect_url_hbox.pack_start(self.live_connect_enter_button, False, False)
+        live_connect_url_hbox.pack_start(self.live_connect_disconnect_enter_button, False, False)
+        live_connect_url_hbox.pack_start(self.live_connect_reconnect_enter_button, False, False)
 
         # コメント
-        comHbox = gtk.HBox()
+        comment_enter_hbox = gtk.HBox()
         # コメント184チェック
-        self.cbAnon = gtk.CheckButton( "184")
-        self.cbAnon.set_active( self.setting.p[ "184"])
+        self.comment_enter_184_checkbutton = gtk.CheckButton("184")
+        self.comment_enter_184_checkbutton.set_active(self.db['setting']["comment_is_184"])
         # コメント入力ボックス
-        self.enCom = gtk.Entry()
-        self.enCom.connect( "key-press-event", self.EntryKeyPress)
+        self.comment_enter_entry = gtk.Entry()
+        self.comment_enter_entry.connect("key-press-event", self.comment_entry_key_press_enter)
         # コメント投稿ボタン
-        self.btPost = gtk.Button( "投稿")
-        self.btPost.connect( "clicked", self.PostComment)
-        self.btPost.set_sensitive( False)
+        self.comment_enter_button = gtk.Button("投稿")
+        self.comment_enter_button.connect("clicked", self.comment_post)
+        self.comment_enter_button.set_sensitive(False)
         # コメント追加
-        comHbox.add( self.cbAnon)
-        comHbox.add( self.enCom)
-        comHbox.add( self.btPost)
+        comment_enter_hbox.add(self.comment_enter_184_checkbutton)
+        comment_enter_hbox.add(self.comment_enter_entry)
+        comment_enter_hbox.add(self.comment_enter_button)
 
         # 接続、スクロール、コメント追加
-        tbLive1Vbox.pack_start( conHbox, False, False)
-        tbLive1Vbox.pack_start( self.scrTree)
-        tbLive1Vbox.pack_start( comHbox, False, False)
+        tab_live1_vbox.pack_start(live_connect_url_hbox, False, False)
+        tab_live1_vbox.pack_start(self.comment_tree_scroll)
+        tab_live1_vbox.pack_start(comment_enter_hbox, False, False)
 
         # ウインドウにタブを追加
-        self.mainWindow.add( self.ntMain)
-        self.mainWindow.set_default_size( 600, 420)
+        self.main_window.add(self.main_notebook)
+        self.main_window.set_default_size(600, 420)
 
         # ツリー内でのコンテキストメニュー
-        self.mnTree = gtk.Menu()
-        mnTreeItem1 = gtk.MenuItem( "ニックネーム設定")
-        mnTreeItem1.connect( "activate", self.NickDialog)
-        mnTreeItem2 = gtk.MenuItem( "リンクを開く")
-        mnTreeItem2.connect( "activate", self.OpenUri)
-        mnTreeItem3 = gtk.MenuItem( "ユーザーページを開く")
-        mnTreeItem3.connect( "activate", self.OpenUserpage)
-        mnTreeItem4 = gtk.MenuItem( "コメントをコピー")
-        mnTreeItem4.connect( "activate", self.CommentCopy)
-        self.mnTree.append( mnTreeItem1)
-        self.mnTree.append( mnTreeItem2)
-        self.mnTree.append( mnTreeItem3)
-        self.mnTree.append( mnTreeItem4)
-        self.mnTree.show_all()
+        self.comment_tree_context_menu = gtk.Menu()
+        comment_tree_context_menu_item_nickname = gtk.MenuItem("ニックネーム設定")
+        comment_tree_context_menu_item_nickname.connect("activate", self.dialog_open_nickname_setting)
+        comment_tree_context_menu_item_linkopen = gtk.MenuItem("リンクを開く")
+        comment_tree_context_menu_item_linkopen.connect("activate", self.browser_open_comment_uri)
+        comment_tree_context_menu_item_useropen = gtk.MenuItem("ユーザーページを開く")
+        comment_tree_context_menu_item_useropen.connect("activate", self.browser_open_user_page)
+        comment_tree_context_menu_item_commentcopy = gtk.MenuItem("コメントをコピー")
+        comment_tree_context_menu_item_commentcopy.connect("activate", self.CommentCopy)
+        self.comment_tree_context_menu.append(comment_tree_context_menu_item_nickname)
+        self.comment_tree_context_menu.append(comment_tree_context_menu_item_linkopen)
+        self.comment_tree_context_menu.append(comment_tree_context_menu_item_useropen)
+        self.comment_tree_context_menu.append(comment_tree_context_menu_item_commentcopy)
+        self.comment_tree_context_menu.show_all()
 
-
-        # タブ2
-        tbSet2Vbox  = gtk.VBox()
-        tbSet2Label = gtk.Label( "設定")
-        self.ntMain.append_page( tbSet2Vbox, tbSet2Label)
-        
         # 設定タブ
-        setBox = gtk.VBox()
-        tbSet2Vbox.pack_start( setBox, False, False)
-        # ニックネームの自動上書きを許可する
-        self.cbNameOw = gtk.CheckButton( "ニックネームの自動上書きを許可する")
-        setBox.pack_start( self.cbNameOw, False, False)
-        # ニックネームが数値の場合上書きしない
-        self.cbNameOwNonNum = gtk.CheckButton( "ニックネームが数値の場合上書きしない")
-        setBox.pack_start( self.cbNameOwNonNum, False, False)
-        # 放送主の背景色を変更する
-        comClHbox = gtk.HBox()
-        self.cbOwComClCh = gtk.CheckButton( "放送主のコメントカラーを変更する")
-        self.enOwComCl = gtk.Entry()
-        comClHbox.pack_start( self.cbOwComClCh, False, False)
-        comClHbox.pack_start( self.enOwComCl, False, False)
-        setBox.pack_start( comClHbox, False, False)
-        # リンクを開くブラウザ名
-        browserHbox = gtk.HBox()
-        lbBrowser = gtk.Label( "リンクを開くブラウザ")
-        browserHbox.pack_start( lbBrowser, False, False)
-        self.enBrowser = gtk.Entry()
-        browserHbox.pack_start( self.enBrowser, False, False)
-        setBox.pack_start( browserHbox, False, False)
-        # 184デフォルト値
-        self.cb184Def = gtk.CheckButton( "標準で184コメントにする")
-        setBox.pack_start( self.cb184Def, False, False)
-        # コメント投稿のモディファイア
-        lbRetMod = gtk.Label( "コメント投稿モディファイア")
-        setBox.pack_start( lbRetMod, False, False)
-        self.lbRetMod = gtk.combo_box_new_text()
-        self.lbRetMod.append_text( "Enterのみ")
-        self.lbRetMod.append_text( "Alt")
-        self.lbRetMod.append_text( "Ctrl")
-        setBox.pack_start( self.lbRetMod, False, False)
-        # クッキーを取得するブラウザ
-        lbCookieBrowser = gtk.Label( "クッキーを取得するブラウザ")
-        setBox.pack_start( lbCookieBrowser, False, False)
-        self.lbCookieBrowser = gtk.combo_box_new_text()
-        self.lbCookieBrowser.append_text("Chromium")
-        self.lbCookieBrowser.append_text("GoogleChrome")        
-        self.lbCookieBrowser.append_text("Firefox")
-        self.lbCookieBrowser.append_text("独自ログイン")
-        setBox.pack_start( self.lbCookieBrowser, False, False)
-        # 設定保存ボタン
-        btSave = gtk.Button( "設定保存")
-        btSave.connect( "clicked", self.SaveSetting)
-        setBox.pack_start( btSave, False, False)
+        tab_setting_vbox = gtk.VBox()
+        tab_setting_label = gtk.Label("設定")
+        self.main_notebook.append_page(tab_setting_vbox, tab_setting_label)
 
-        
+        # 設定タブ
+        setting_vbox = gtk.VBox()
+        tab_setting_vbox.pack_start(setting_vbox, False, False)
+        # ニックネームの自動上書きを許可する
+        self.setting_nickname_overwrite_checkbox = gtk.CheckButton("ニックネームの自動上書きを許可する")
+        setting_vbox.pack_start(self.setting_nickname_overwrite_checkbox, False, False)
+        # ニックネームが数値の場合上書きしない
+        self.setting_nickname_num_overwrite_checkbox = gtk.CheckButton("ニックネームが数値の場合上書きしない")
+        setting_vbox.pack_start(self.setting_nickname_num_overwrite_checkbox, False, False)
+        # 放送主の背景色を変更する
+        setting_ownerbgcolor_hbox = gtk.HBox()
+        self.setting_ownerbgcolor_change_checkbox = gtk.CheckButton("放送主のコメントカラーを変更する")
+        self.setting_ownerbgcolor_change_color_entry = gtk.Entry()
+        setting_ownerbgcolor_hbox.pack_start(self.setting_ownerbgcolor_change_checkbox, False, False)
+        setting_ownerbgcolor_hbox.pack_start(self.setting_ownerbgcolor_change_color_entry, False, False)
+        setting_vbox.pack_start(setting_ownerbgcolor_hbox, False, False)
+        # リンクを開くブラウザ名
+        setting_openlinkbrowser_hbox = gtk.HBox()
+        setting_openlinkbrowser_label = gtk.Label("リンクを開くブラウザ")
+        setting_openlinkbrowser_hbox.pack_start(setting_openlinkbrowser_label, False, False)
+        self.setting_openlinkbrowser_entry = gtk.Entry()
+        setting_openlinkbrowser_hbox.pack_start(self.setting_openlinkbrowser_entry, False, False)
+        setting_vbox.pack_start(setting_openlinkbrowser_hbox, False, False)
+        # 184デフォルト値
+        self.setting_comment_enter_default_184_checkbox = gtk.CheckButton("標準で184コメントにする")
+        setting_vbox.pack_start(self.setting_comment_enter_default_184_checkbox, False, False)
+        # 管理費表示デフォルト値
+        self.setting_hide_control_comment_checkbox = gtk.CheckButton("管理コメントを非表示にする")
+        setting_vbox.pack_start(self.setting_hide_control_comment_checkbox, False, False)
+        # コメント投稿のモディファイア
+        setting_comment_enter_modifier_label = gtk.Label("コメント投稿モディファイア")
+        setting_vbox.pack_start(setting_comment_enter_modifier_label, False, False)
+        self.setting_comment_enter_modifier_conbobox = gtk.combo_box_new_text()
+        self.setting_comment_enter_modifier_conbobox.append_text("Enterのみ")
+        self.setting_comment_enter_modifier_conbobox.append_text("Alt")
+        self.setting_comment_enter_modifier_conbobox.append_text("Ctrl")
+        setting_vbox.pack_start(self.setting_comment_enter_modifier_conbobox, False, False)
+        # クッキーを取得するブラウザ
+        setting_cokkiebrowser_label = gtk.Label("クッキーを取得するブラウザ")
+        setting_vbox.pack_start(setting_cokkiebrowser_label, False, False)
+        self.setting_cookiebrouser_conbobox = gtk.combo_box_new_text()
+        self.setting_cookiebrouser_conbobox.append_text("Chromium")
+        self.setting_cookiebrouser_conbobox.append_text("GoogleChrome")
+        self.setting_cookiebrouser_conbobox.append_text("Firefox")
+        self.setting_cookiebrouser_conbobox.append_text("独自ログイン")
+        setting_vbox.pack_start(self.setting_cookiebrouser_conbobox, False, False)
+        # 設定保存ボタン
+        setting_save_button = gtk.Button("設定保存")
+        setting_save_button.connect("clicked", self.setting_save)
+        setting_vbox.pack_start(setting_save_button, False, False)
+
         # クリップボード
-        self.clipboard =  gtk.Clipboard()
+        self.clipboard = gtk.Clipboard()
 
         # ウインドウを表示
-        self.mainWindow.show_all()
+        self.main_window.show_all()
 
-    def LiveEnter( self, widget = None):
-        """
-        放送ID入力欄でエンターが押されたときの動作
-        
-        引数:
-        widget -
-        返し値:
-        
-        """
+    def live_enter(self, widget=None):
         # 接続中なら放送を切断
-        if not self.btLiveCon.get_sensitive():
-            self.LiveDisconnect()
-        
-        # 放送に接続
-        self.LiveConnect()
+        if not self.live_connect_enter_button.get_sensitive():
+            self.disconnect_live()
 
-    def LiveIdDrags( self, widget, context, x, y, selection, info, time):
-        """
-        EntryにURIがドラッグされたときにURIをセットする
-        
-        引数:
-        widget -
-        context -
-        x -
-        y -
-        selection -
-        info -
-        time -
-        返し値:
-        
-        """
-        # ドラッグされたデータを入力する 
+        self.connect_live()
+
+    def drags_live_id(self, widget, context, x, y, selection, info, time):
+        # ドラッグされたデータを入力する
         uri = selection.data
-        self.enLive.set_text( uri.rstrip())
+        self.live_connect_url_entry.set_text(uri.rstrip())
 
-    def EntryKeyPress( self, widget = None, event = None):
-        """
-        コメントEntryにてM-Enterでコメントを送信する
-        
-        引数:
-        widget - 
-        event  -
-        返し値:
-        
-        """
-        # 入力されたキー名を取得
-        keyname = gtk.gdk.keyval_name( event.keyval)
-        
-        # モディファイアリスト
-        MOD = [ 0, 0x18, 0x14]
+    def comment_entry_key_press_enter(self, widget=None, event=None):
+        keyname = gtk.gdk.keyval_name(event.keyval)
+
+        modifier_keys = [0, 0x18, 0x14]
 
         # エンターが入力されたら
         if "Return" == keyname:
             # モディファイアキー設定がなしならば
-            if self.setting.p[ "pmod"] == 0:
-                self.PostComment( widget)
+            if self.db['setting']["comment_enter_modifier"] == 0:
+                self.comment_post(widget)
             # モディファイアキーの入力なら
-            elif event.state == MOD[ self.setting.p[ "pmod"]]:
-                self.PostComment( widget)
+            elif event.state == modifier_keys[self.db['setting']["comment_enter_modifier"]]:
+                self.comment_post(widget)
 
-    def TreePopup( self, widget = None, event = None):
-        """
-        TreeViewで右クリック時のコンテキストメニュー
-
-        引数:
-        widget - 
-        event  - 
-        返し値:
-                
-        """
+    def comment_tree_left_click(self, widget=None, event=None):
         # 右クリックの判定
         if event.button == 3:
             # コンテキストメニューの表示
-            self.mnTree.popup( None, None, None, event.button, event.time)            
+            self.comment_tree_context_menu.popup(None, None, None, event.button, event.time)
 
-    def ColumnResize( self, source, condition):
-        """
-        カラムテキストの折り返し幅を調整
-        
-        引数:
-        source - 
-        condition -         
-        返し値:
-        """
+    def comment_tree_column_resize(self, source, condition):
         # 保存カラム幅と実カラム幅が違えば
-        if self.clComWidth != self.clCom.get_width():
+        if self.comment_tree_column_comment_width != self.comment_tree_column_comment.get_width():
             # 実カラム幅を保存カラム幅に
-            self.clComWidth = self.clCom.get_width()
+            self.comment_tree_column_comment_width = self.comment_tree_column_comment.get_width()
             # テキストの折り返しを調整
-            self.clComCrt.set_property( "wrap-width", self.clComWidth - 10)
-        
-    def CheckScroll( self):
-        """
-        スクロールさせるか否か
-        
-        引数:
+            self.comment_tree_column_comment_render_text.set_property("wrap-width", self.comment_tree_column_comment_width - 10)
 
-        返し値:
-
-        """
+    def CheckScroll(self):
         # 現在のスクロール位置
-        adjustment = self.scrTree.get_vadjustment()
-        
+        adjustment = self.comment_tree_scroll.get_vadjustment()
+
         # スクロール位置を
         adjustment.value = adjustment.upper - adjustment.page_size
 
-    def Time2LiveFTime( self, base, now):
-        """
-        コメント時間を放送フォーマットの時間も時刻文字列に変換する
-
-        引数:
-        base - 放送基本時間
-        now  - コメント時間
-        返し値:
-         - コメント投稿放送時間文字列
-        """
+    def Time2LiveFTime(self, base, now):
         # 経過秒を計算
         tm = now - base
-        
+
         # フォーマットして返す(時間、分ともに0埋め2桁
-        return time.strftime( "%H:%M:%S", time.gmtime( tm))[1:]
+        return time.strftime("%H:%M:%S", time.gmtime(tm))[1:]
 
-
-    def CommentCopy( self, widget = None):
-        """
-        コメントをコピー
-        
-        引数:
-        widget -
-        返し値:
-        
-        """
+    def CommentCopy(self, widget=None):
         # コメントを取得
-        comment = self.GetTreeColumn( 2)
-        
+        comment = self.get_tree_column(2)
+
         # コメントをクリップボードにコピー
-        self.clipboard.set_text( comment)
+        self.clipboard.set_text(comment)
 
-    def LoadNickDictionaly( self):
-        """
-        ニックネーム辞書の読み込み
-        
-        引数:
-        
-        返し値:
-        
-        """
-        if os.access( self.setting.nicknameFile, os.F_OK):
-            # 辞書の読み込み
-            f = open( self.setting.nicknameFile, "r")
-            self.userDict = pickle.load( f)
-            f.close()
-        else:
-            # 無ければ辞書を作成
-            self.userDict = {}
-
-    def LoadSetting( self):
-        """
-        セッティング情報の適応
-        
-        引数:
-        
-        返し値:
-        
-        """
+    def setting_load(self):
         # 設定の適応
-        self.lbCookieBrowser.set_active( self.setting.p[ "ctype"])
-        self.lbRetMod.set_active( self.setting.p[ "pmod"])
-        self.cb184Def.set_active( self.setting.p[ "184"])
-        self.cbNameOw.set_active( self.setting.p[ "nickOw"])
-        self.cbNameOwNonNum.set_active( self.setting.p[ "nickOwIsNum"])
-        self.cbOwComClCh.set_active( self.setting.p[ "BgOwnerColorChange"])
-        self.enOwComCl.set_text( self.setting.p[ "BgOwnerColor"])
-        self.enBrowser.set_text( self.setting.p[ "browser"])
+        self.setting_cookiebrouser_conbobox.set_active(self.db['setting']["cookie_browser"])
+        self.setting_comment_enter_modifier_conbobox.set_active(self.db['setting']["comment_enter_modifier"])
+        self.setting_comment_enter_default_184_checkbox.set_active(self.db['setting']["comment_is_184"])
+        self.setting_hide_control_comment_checkbox.set_active(self.db['setting']['hide_control_comment'])
+        self.setting_nickname_overwrite_checkbox.set_active(self.db['setting']["nickname_overwrite_is"])
+        self.setting_nickname_num_overwrite_checkbox.set_active(self.db['setting']["nickname_overwrite_num_is"])
+        self.setting_ownerbgcolor_change_checkbox.set_active(self.db['setting']["bg_owner_color_change_is"])
+        self.setting_ownerbgcolor_change_color_entry.set_text(self.db['setting']["bg_owner_color"])
+        self.setting_openlinkbrowser_entry.set_text(self.db['setting']["open_browser"])
 
-    def SaveSetting( self, widget = None):
-        """
-        設定の保存
-        
-        引数:
-        widget -        
-        返し値:
-        
-        """
+    def setting_save(self, widget=None):
         # クッキーブラウザ
-        active = self.lbCookieBrowser.get_active()
-        self.setting.p[ "ctype"] = active
-        
+        active = self.setting_cookiebrouser_conbobox.get_active()
+        self.db['setting']["cookie_browser"] = active
+
         # 投稿モディファイア
-        active = self.lbRetMod.get_active()
-        self.setting.p[ "pmod"] = active
-        
+        active = self.setting_comment_enter_modifier_conbobox.get_active()
+        self.db['setting']["comment_enter_modifier"] = active
+
         # 184
-        if self.cb184Def.get_active():
-            self.setting.p[ "184"] = True
+        if self.setting_comment_enter_default_184_checkbox.get_active():
+            self.db['setting']["comment_is_184"] = True
         else:
-            self.setting.p[ "184"] = False
-        
+            self.db['setting']["comment_is_184"] = False
+
+        # hide
+        if self.setting_hide_control_comment_checkbox.get_active():
+            self.db['setting']["hide_control_comment"] = True
+        else:
+            self.db['setting']["hide_control_comment"] = False
+
         # ニックネーム上書き
-        if self.cbNameOw.get_active():
-            self.setting.p[ "nickOw"] = True
+        if self.setting_nickname_overwrite_checkbox.get_active():
+            self.db['setting']["nickname_overwrite_is"] = True
         else:
-            self.setting.p[ "nickOw"] = False
-        
+            self.db['setting']["nickname_overwrite_is"] = False
+
         # 数値ニックネーム上書き
-        if self.cbNameOwNonNum.get_active():
-            self.setting.p[ "nickOwIsNum"] = True
+        if self.setting_nickname_num_overwrite_checkbox.get_active():
+            self.db['setting']["nickname_overwrite_num_is"] = True
         else:
-            self.setting.p[ "nickOwIsNum"] = False
-            
+            self.db['setting']["nickname_overwrite_num_is"] = False
+
         # 放送主コメントの背景色変更
-        if self.cbOwComClCh.get_active():
-            self.setting.p[ "BgOwnerColorChange"] = True
+        if self.setting_ownerbgcolor_change_checkbox.get_active():
+            self.db['setting']["bg_owner_color_change_is"] = True
         else:
-            self.setting.p[ "BgOwnerColorChange"] = False
-        
+            self.db['setting']["bg_owner_color_change_is"] = False
+
         # 放送主コメント背景色
-        self.setting.p[ "BgOwnerColor"] = self.enOwComCl.get_text()
-        
+        self.db['setting']["bg_owner_color"] = self.setting_ownerbgcolor_change_color_entry.get_text()
+
         # URIオープンブラウザ
-        self.setting.p[ "browser"] = self.enBrowser.get_text()
-        
-        # 設定を保存
-        f = open( self.setting.settingFile, "w")
-        pickle.dump( self.setting.p, f)
-        f.close()
-        
-        # 設定を読み込み
-        self.LoadSetting()
- 
-    def OpenUserpage( self, widget = None):
-        """
-        生IDならユーザページを開く
-        
-        引数:
-        widget -        
-        返し値:
-        
-        """
-        
+        self.db['setting']["open_browser"] = self.setting_openlinkbrowser_entry.get_text()
+
+        self.db.sync()
+
+    def browser_open_user_page(self, widget=None):
         # noを取得
-        no = self.GetTreeColumn( 0)
-        
-        # 投稿者IDの抜き出し                                                                
-        for line in self.live.comList:
-            if line[0] == no:                                                               
-                id = line[1]                                             
+        no = self.get_tree_column(0)
+
+        # 投稿者IDの抜き出し
+        for line in self.live.comments:
+            if line[0] == no:
+                id = line[1]
                 break
-        
+
         # 生IDかチェック
         if id.isdigit():
             # ページを開く
-            os.popen( "%s '%s%s' &" % ( self.setting.p[ "browser"], "http://www.nicovideo.jp/user/", id)) 
+            os.popen("%s '%s%s' &" % (self.db['setting']["open_browser"], "http://www.nicovideo.jp/user/", id))
 
-    def GetTreeColumn( self, retno):
-        """
-        選択されている行の指定カラムの要素を返す
-        
-        引数:
-        retno - カラム番号
-        返し値:
-         - カラム番号の要素
-        """
-        
+    def get_tree_column(self, retno):
         # セレクトされている行を取得
-        selection = self.trCom.get_selection()
+        selection = self.comment_tree.get_selection()
         # 行からモデルとイテレータを取得
-        ( model, iter) = selection.get_selected()
+        (model, iter) = selection.get_selected()
         # モデルとイテレータから行のIDを取得 ( 0: No行
-        return model.get_value( iter, retno)
-        
-    def OpenUri( self, widget = None):
-        """
-        コメントにURIが含まれていれば開く
-        
-        引数:
-        widget -
-        返し値:
-        
-        """
+        return model.get_value(iter, retno)
+
+    def browser_open_comment_uri(self, widget=None):
         # コメントを取得
-        comment = self.GetTreeColumn( 2)
-                
+        comment = self.get_tree_column(2)
+
         # URIを抽出
-        uriPattern = re.compile( r'(http://[\w\d/\-_.%?=&]+)')
-        match = uriPattern.findall( comment)
-        
+        uriPattern = re.compile(r'(http://[\w\d/\-_.%?=&]+)')
+        match = uriPattern.findall(comment)
+
         # URIがあれば開く
-        if len( match) != 0:
-            os.popen( "%s '%s' &" % ( self.setting.p[ "browser"], match[0]))
+        if len(match) != 0:
+            os.popen("%s '%s' &" % (self.db['setting']["open_browser"], match[0]))
 
-    def NickDialog( self, widget = None):
-        """
-        ニックネーム設定用ダイアログの表示
-
-        引数:
-        widget - 
-
-        戻し値:
-        """
+    def dialog_open_nickname_setting(self, widget=None):
         # セレクトされている行を取得
-        selection = self.trCom.get_selection()
+        selection = self.comment_tree.get_selection()
         # 行からモデルとイテレータを取得
-        ( model, iter) = selection.get_selected()
+        (model, iter) = selection.get_selected()
         # モデルとイテレータから行のIDを取得 ( 0: No行
-        no = model.get_value( iter, 0)
+        no = model.get_value(iter, 0)
 
-        # 投稿者IDの抜き出し                                                                
-        for line in self.live.comList:
-            if line[0] == no:                                                               
-                id = line[1]                                             
+        # 投稿者IDの抜き出し
+        for line in self.live.comments:
+            if line[0] == no:
+                id = line[1]
                 break
-        
+
         # ニックネームを取得
-        nick = self.Id2Name( id)
+        nick = self.pick_nickname(id)
         if nick == id:
             nick = ""
 
         # ニックネームダイアログ
-        dlg = NickDialog( title = "ニックネーム設定", id = id, nick = nick, flags = gtk.DIALOG_DESTROY_WITH_PARENT, buttons = (gtk.STOCK_CANCEL, gtk.RESPONSE_CANCEL, gtk.STOCK_OK, gtk.RESPONSE_OK))
+        dlg = NicknameSettingDialog(title="ニックネーム設定", user_id=id, nick=nick, flags=gtk.DIALOG_DESTROY_WITH_PARENT, buttons=(gtk.STOCK_CANCEL, gtk.RESPONSE_CANCEL, gtk.STOCK_OK, gtk.RESPONSE_OK))
         # ダイアログの表示 終了コードを保存
         resid = dlg.run()
         # 終了コードがOKコードなら
         if resid == gtk.RESPONSE_OK:
             # 入力ニックネームを取得し、設定する
-            nick = dlg.RetNick()
-            self.SetNick( id, nick)
+            nick = dlg.get_nickname()
+            self.save_nickname(id, nick)
         # ダイアログを終了する
         dlg.destroy()
 
         # ポインタを初期化
-        self.curListNum = 0
-        
-        # 行番号を初期化
-        self.iter = 1
-        
-        # 前コメント番号を初期化
-        self.beforeNo = None
-        
-        # TreeViewを消去
-        self.trCom.get_model().clear()
+        self.current_list_number = 0
 
-        # オリジナル設定を保存 
-        nickOwOrg = self.setting.p[ "nickOw"]
-        self.setting.p[ "nickOw"] = False
+        # 行番号を初期化
+        self.tree_iterator = 1
+
+        # 前コメント番号を初期化
+        self.before_number = None
+
+        # TreeViewを消去
+        self.comment_tree.get_model().clear()
+
+        # オリジナル設定を保存
+        nickOwOrg = self.db['setting']["nickname_overwrite_is"]
+        self.db['setting']["nickname_overwrite_is"] = False
 
         # TreeViewの更新
-        self.TreeAppendComment()
-        
+        self.comment_tree_append_comment()
+
         # オリジナル設定に戻す
-        self.setting.p[ "nickOw"] = nickOwOrg
+        self.db['setting']["nickname_overwrite_is"] = nickOwOrg
 
-    def SetNick( self, id, nick):
-        """
-        ニックネーム辞書に追加/上書きする
-
-        引数:
-        id   - ユーザID
-        nick - ニックネーム
-        返し値:
-        
-        """
+    def save_nickname(self, user_id, nickname):
         # ニックネームを辞書に設定
-        self.userDict[ id] = nick
+        self.db['nickname'][user_id] = nickname
+        self.db.sync()
 
-    def GetLiveId( self, idStr):
-        """
-        文字列からIDを抽出する
-        
-        引数:
-        idStr - 文字列
-        返し値:
-        None - IDがマッチしない
-         - 放送ID
-        """
+    def parse_live_id(self, raw_string):
         # DEBUG 正しい放送IDを抜き出す
-        idRegex = re.compile( r"(co\d{4,}|lv\d{4,})")
-        match = idRegex.findall( idStr)
+        re_live_id = re.compile(r"(co\d{4,}|lv\d{4,})")
+        match = re_live_id.findall(raw_string)
 
-        # matchが空ならマッチしなかった        
-        if len( match) == 0:
+        # matchが空ならマッチしなかった
+        if len(match) == 0:
             return None
         else:
             return match[0]
-        
-    def LiveConnect( self, widget = None):
-        """
-        コメントサーバに接続
-        
-        引数:
-        widget - 
-        返し値:
-        """
+
+    def connect_live(self, widget=None):
         # ポインタを初期化
-        self.curListNum = 0
-        
+        self.current_list_number = 0
         # 行番号を初期化
-        self.iter = 1
-        
+        self.tree_iterator = 1
         # 前コメント番号を初期化
-        self.beforeNo = None
-        
+        self.before_number = None
         # TreeViewを消去
-        self.trCom.get_model().clear()
-            
+        self.comment_tree.get_model().clear()
+
         # クッキーよりセッションIDの取得
-        btype = [ "ch", "gc", "fx", "nr"]
-        nicoSessionId = NicoSessionId( btype[ self.setting.p[ "ctype"]])
-        sessionId = nicoSessionId.sessionId
-        
-        # 放送IDを入力ボックスより取得
-        self.liveId = self.enLive.get_text()
-        
+        browser_names = ["ch", "gc", "fx", "nr"]
+        nico_session = GetBrowserSessionId(browser_names[self.db['setting']["cookie_browser"]])
+        session_id = nico_session.session_id
+
         # 入力より放送IDを抜き出す
-        self.liveId = self.GetLiveId( self.liveId)
-        if self.liveId == None:
+        self.live_id = self.parse_live_id(self.live_connect_url_entry.get_text())
+        if self.live_id == None:
             print "放送IDが不正です。"
             return
-        
+
         # 放送へ接続
-        self.live = Live( "http://watch.live.nicovideo.jp/api/getplayerstatus?v=%s" % ( self.liveId), sessionId)
+        self.live = Live("http://watch.live.nicovideo.jp/api/getplayerstatus?v=%s" % (self.live_id), session_id)
+        self.tab_live_label.set_markup(self.live.live_page_title)
 
         # 放送に接続できない
-        if not self.live.connect:
+        if not self.live.connecting:
             print "放送に接続できません"
             return
 
         # ソケットウォッチの追加
-        self.watch = gobject.io_add_watch( self.live.sock, gobject.IO_IN, self.GetComment)
+        self.watch = gobject.io_add_watch(self.live.socket, gobject.IO_IN, self.get_comment)
 
         # チケット/過去のコメントの取得
-        self.live.GetTicket()
+        self.live.set_ticket()
 
         # ボタンの制御
-        self.btLiveCon.set_sensitive( False)
-        self.btLiveDis.set_sensitive( True)
-        self.btLiveRe.set_sensitive( True)
-        self.btPost.set_sensitive( True)
-        
-    def LiveDisconnect( self, widget = None):
-        """
-        コメントサーバから切断
+        self.live_connect_enter_button.set_sensitive(False)
+        self.live_connect_disconnect_enter_button.set_sensitive(True)
+        self.live_connect_reconnect_enter_button.set_sensitive(True)
+        self.comment_enter_button.set_sensitive(True)
 
-        引数:
-        widget - 
-        返し値:
-        """
+    def disconnect_live(self, widget=None):
         # ソケットウォッチの削除
-        gobject.source_remove( self.watch)
+        gobject.source_remove(self.watch)
 
         # ソケットの切断
-        self.live.SocketDisconnect()
+        self.live.socket_disconnect()
 
         # 放送の削除
         del self.live
 
         # ボタンの制御
-        self.btLiveCon.set_sensitive( True)
-        self.btLiveDis.set_sensitive( False)
-        self.btLiveRe.set_sensitive( False)
-        self.btPost.set_sensitive( False)
+        self.live_connect_enter_button.set_sensitive(True)
+        self.live_connect_disconnect_enter_button.set_sensitive(False)
+        self.live_connect_reconnect_enter_button.set_sensitive(False)
+        self.comment_enter_button.set_sensitive(False)
 
-    def LiveReconnect( self, widget = None):
-        """
-        コメントサーバへ再接続
-        
-        引数:
-        widget - 
-        返し値:
-        """
+    def reconnect_live(self, widget=None):
         # 切断
-        self.LiveDisconnect( widget)
+        self.disconnect_live(widget)
 
         # 接続
-        self.LiveConnect( widget)
-        
-    def PostComment( self, widget = None):
-        """
-        コメントを投稿
+        self.connect_live(widget)
 
-        引数:
-        widget - 
-        返し値:
-        """
+    def comment_post(self, widget=None):
         # コメント入力ボックスよりコメントを取得
-        self.live.comment = self.enCom.get_text()
-        
+        self.live.comment = self.comment_enter_entry.get_text()
+
         # 入力が空ならコメントを送信しない
         if self.live.comment == "":
             return
-        
+
         # コメント入力ボックスを空に
-        self.enCom.set_text( "")
-        
+        self.comment_enter_entry.set_text("")
+
         # 匿名コメントチェック確認
-        if self.cbAnon.get_active():
+        if self.comment_enter_184_checkbutton.get_active():
             self.live.anonymity = "mail='184'"
         else:
             self.live.anonymity = ""
 
         # NGワードチェック
-        ngWords = NgCommentDict.word
-        for word in ngWords.keys():
-            if self.live.comment.find( word) != -1:
-                self.live.comment = self.live.comment.replace( word, ngWords[ word])
+        for word in ng_comments.keys():
+            if self.live.comment.find(word) != -1:
+                self.live.comment = self.live.comment.replace(word, ng_comments[word])
 
         # コメントを投稿
-        self.live.PostComment()
+        self.live.post_comment()
 
-    def GetComment( self, source, condition):
-        """
-        コメントを取得する
-        
-        引数:
-        source - 
-        condition -         
-        返し値:
-        True (id_add_watchに渡すために必要
-        """
+    def get_comment(self, source, condition):
         # コメントをソケットから読み込み
-        self.live.GetComment()
+        self.live.get_comment()
 
         # ツリーに追加
-        self.TreeAppendComment()
-        
+        self.comment_tree_append_comment()
+
         # io_add_watchに渡す
         return True
 
-    def TreeAppendComment( self):
-        """
-        ツリーにコメントを追加
-        
-        引数:
-        
-        返し値:
-        
-        """        
+    def comment_tree_append_comment(self):
         # ツリーに追加
-        while self.curListNum < len( self.live.comList):
+        while self.current_list_number < len(self.live.comments):
             # 名前を設定
-            name = self.Id2Name( self.live.comList[ self.curListNum][1])
-            
+            name = self.pick_nickname(self.live.comments[self.current_list_number][1])
+
             # 時間を設定
-            if self.live.comList[ self.curListNum][4].isdigit():
-                time = self.Time2LiveFTime( int( self.live.base_time), int( self.live.comList[ self.curListNum][4]))
+            if self.live.comments[self.current_list_number][4].isdigit():
+                time = self.Time2LiveFTime(int(self.live.comment_basetime), int(self.live.comments[self.current_list_number][4]))
             else:
                 time = ""
 
             # コメントからニックネームを設定
-            self.Comment2Nick( self.live.comList[ self.curListNum][1], self.live.comList[ self.curListNum][2])
+            self.comment2nick(self.live.comments[self.current_list_number][1], self.live.comments[self.current_list_number][2])
 
             # Statusを取得
-            status = self.live.comList[ self.curListNum][3]
+            status = self.live.comments[self.current_list_number][3]
 
             # コメント番号
-            no = self.live.comList[ self.curListNum][0]
+            no = self.live.comments[self.current_list_number][0]
 
             # アイコンの設定
-            iconDir = os.path.dirname(__file__)
             if status == "0":
-                statusIcon = gtk.gdk.pixbuf_new_from_file( iconDir + "/Normal.gif")
+                status_icon = gtk.gdk.pixbuf_new_from_file(ICON_DIR + "/Normal.png")
             elif status == "1":
-                statusIcon = gtk.gdk.pixbuf_new_from_file( iconDir + "/Premium.gif")
+                status_icon = gtk.gdk.pixbuf_new_from_file(ICON_DIR + "/Premium.png")
             elif status == "3":
-                statusIcon = gtk.gdk.pixbuf_new_from_file( iconDir + "/Owner.gif")
+                status_icon = gtk.gdk.pixbuf_new_from_file(ICON_DIR + "/Owner.png")
             else:
-                statusIcon = gtk.gdk.pixbuf_new_from_file( iconDir + "/Ng.png")
+                status_icon = gtk.gdk.pixbuf_new_from_file(ICON_DIR + "/Ng.png")
 
             # NGコメント
-            if self.beforeNo != None and no != "0":
-                sa = int( no) - int( self.beforeNo)
+            if self.before_number != None and no != "0":
+                sa = int(no) - int(self.before_number)
                 if sa != 1:
-                    for i in range( 1, sa):
-                        # NGコメント背景 
-                        color = self.setting.p[ "BgNgColor"]
+                    for i in range(1, sa):
+                        # NGコメント背景
+                        color = self.db['setting']['bg_ng_color']
                         # NGコメントアイコン
-                        ngIcon = gtk.gdk.pixbuf_new_from_file( iconDir + "/Ng.png")
+                        ng_icon = gtk.gdk.pixbuf_new_from_file(ICON_DIR + "/Ng.png")
                         # NGコメントをTreeViewに追加
-                        self.trCom.get_model().append( ( str( int( no) - sa + i), "",  "NGコメント", ngIcon, "", color),)
-                        self.iter += 1
+                        self.comment_tree.get_model().append((str(int(no) - sa + i), "", "NGコメント", ng_icon, "", color), )
+                        self.tree_iterator += 1
 
             # コメントNoを保存
-            self.beforeNo = no
-            
+            self.before_number = no
+
             # コメント
-            comment = self.live.comList[ self.curListNum][2]
-            comment = self.UnescapeStr( comment)
-            
+            comment = self.live.comments[self.current_list_number][2]
+            comment = str2html_unescape(comment)
+
             # 背景色の取得
-            color = self.Iter2BgColor( self.iter, status)
-            
+            color = self.iter2bgcolor(self.tree_iterator, status)
+
             # ツリーに行を追加
-            self.trCom.get_model().append( ( no, name, comment, statusIcon, time, color),)
-            
+            if self.db['setting']['hide_control_comment'] is True and comment.startswith('/hb'):
+                pass
+            else:
+                self.comment_tree.get_model().append((no, name, comment, status_icon, time, color), )
+
             # 行番号を次へ
-            self.iter += 1
-            
+            self.tree_iterator += 1
+
             # リストポインタを移動
-            self.curListNum += 1
+            self.current_list_number += 1
 
         # スクロールの調整
-        adjustment = self.scrTree.get_vadjustment()
+        adjustment = self.comment_tree_scroll.get_vadjustment()
 
         # スクロールさせるかいなか
         if adjustment.value == adjustment.upper - adjustment.page_size:
-            gobject.idle_add( self.CheckScroll)
+            gobject.idle_add(self.CheckScroll)
 
-    def Comment2Nick( self, id, comment):
-        """
-        コメントからニックネームを辞書に追加
-
-        引数:
-        id      - ユーザID
-        comment - コメント  
-        戻し値:
-        True: 成功
-        False: 失敗(上書き未許可
-        """
-
+    def comment2nick(self, id, comment):
         # ニックネームの上書きを許可するか
-        nickOw = self.setting.p[ "nickOw"]
+        nickOw = self.db['setting']["nickname_overwrite_is"]
         # ニックネームが数値のみでも登録するか
-        nickNumOw = self.setting.p[ "nickOwIsNum"]
+        nickNumOw = self.db['setting']["nickname_overwrite_is"]
 
         # コメントに@が含まれていれば
-        if comment.find( "@") != -1 or comment.find( "＠") != -1:
+        if comment.find("@") != -1 or comment.find("＠") != -1:
             # @で分割
-            nick = re.split( r"@|＠", comment)
+            nick = re.split(r"@|＠", comment)
             # 分割した文字列の最後をさらにスペースで分割して最初をニックネームに設定
-            nick = nick[-1].split( " ")[0]
+            nick = nick[-1].split(" ")[0]
             # ニックネームが数値だけで、数値の登録を拒否していれば
             if nick.isdigit() and nickNumOw:
                 return False
-            else: 
+            else:
                 # IDが存在し、ニックネームの上書きが許可されていればニックネームの設定
-                if self.userDict.has_key( id) and nickOw:
-                    self.SetNick( id, nick)
+                if self.db['nickname'].has_key(id) and nickOw:
+                    self.save_nickname(id, nick)
                 # IDが存在しなければニックネームの設定
-                elif not self.userDict.has_key( id):
-                    self.SetNick( id, nick)
+                elif not self.db['nickname'].has_key(id):
+                    self.save_nickname(id, nick)
                 return True
 
-    def Id2Name( self, id):
-        """
-        ユーザ名ディクショナリからユーザ名を検索
-
-        引数:
-        id - ユーザID
-        返し値:
-         - ニックネームが登録されていたらニックネームを、登録されていなければidを返す
-        """
-        # ニックネーム辞書よりIDを検索する 
-        if self.userDict.has_key( id):
-            return self.userDict[ id]
+    def pick_nickname(self, user_id):
+        # ニックネーム辞書よりIDを検索する
+        if user_id in self.db['nickname']:
+            return self.db['nickname'][user_id]
         else:
-            return id
+            return user_id
 
-    def UnescapeStr( self, comment):
-        """
-        HTMLエスケープされたコメントをアンエスケープする
-        
-        引数:
-        comment - コメント
-        返し値:
-         - アンエスケープしたコメント
-        """
-        return comment.replace( "&lt;", r"<").replace( "&gt;", r">").replace( "&quote;", r"\"").replace( "&amp;", r"&")
-    
-    def Iter2BgColor( self, iter, status = 0):
-        """
-        行番号に応じた背景色を返す
-        
-        引数:
-        iter - 行番号
-        返し値:
-         - 背景色
-        """
+    def iter2bgcolor(self, iter, status=0):
         # 放送主コメントなら設定カラーを返す
-        if status == "3" and self.setting.p[ "BgOwnerColorChange"]:
-            return self.setting.p[ "BgOwnerColor"]
+        if status == "3" and self.db['setting']["bg_owner_color"]:
+            return self.db['setting']["bg_owner_color"]
 
         # 行番号に応じたカラーを返す
-        if self.iter % 2:
+        if self.tree_iterator % 2:
             return "#FFFFFF"
         else:
             return "#EEEEEE"
 
-    def SaveNickDict( self):
-        """
-        ニックネーム辞書を保存
-        
-        引数:
-        
-        返し値:
-        """
-        # 固定ハンドル保存
-        f = open( self.setting.nicknameFile, "w")
-        pickle.dump( self.userDict, f)
-        f.close()
-
-    def SaveCommentDict( self):
-        """
-        コメント辞書を保存
-        
-        引数:
-        
-        返し値:
-        """
-        # 固定ハンドル保存
-        f = open( self.setting.commentFile, "w")
-        pickle.dump( self.live.comList, f)
-        f.close()
-
-    def QuitWindow( self, widget = None, event = None):
-        """
-        アプリケーション終了
-        
-        引数:
-        widget - 
-        event  - 
-        返し値:
-        """
-        # ニックネーム辞書の保存
-        self.SaveNickDict()
-
-        # コメントの保存
-        self.SaveCommentDict()
+    def close_window(self, widget=None, event=None):
+        self.db.sync()
 
         # GUI終了
         gtk.main_quit()
 
 
-class NickDialog( gtk.Dialog):
-    """
-    ニックネーム設定ダイアログ
-    """
-
-    def __init__( self, id, nick, *args, **kwargs):
-        """
-        コンストラクタ
-        """
-        # 継承元クラスのコンストラクタ
-        gtk.Dialog.__init__( self, *args, **kwargs)
-        
-        # ウインドウ初期化
-        self.WindowInitialize( id, nick)
-        
-    def __del__( self):
-        """
-        デストラクタ
-        
-        引数:
-        
-        返し値:
-        
-        """
-        pass
-
-    def WindowInitialize( self, id, nick):
-        """
-        メインウインドウの初期化
-        
-        引数:
-        
-        返し値:
-        
-        """
-        # デフォルトレスポンスを設定
-        self.set_default_response( gtk.RESPONSE_OK)
-
-        # 格納ボックス
-        self.nickBox = gtk.VBox()
-
-        # ID表示ラベル
-        self.labelId = gtk.Label( id)
-
-        # ニックネーム入力エントリ
-        self.nickEntry = gtk.Entry()
-        self.nickEntry.set_activates_default( True)
-        self.nickEntry.set_text( nick)
-        self.nickEntry.grab_focus()
-
-        # ボックスに格納
-        self.nickBox.add( self.labelId)
-        self.nickBox.add( self.nickEntry)
-        
-        # ダイアログにボックスを格納
-        self.vbox.add( self.nickBox)
-
-        # 全てを表示
-        self.vbox.show_all()
-
-    def RetNick( self):
-        """
-        ニックネームを返す
-        
-        引数:
-        返し値:
-        """        
-        return self.nickEntry.get_text()
-
-
-setting = Setting()
-a = WinCom( setting)
-gtk.main()
+if __name__ == '__main__':
+    DBInitialize()
+    WinCom()
+    gtk.main()

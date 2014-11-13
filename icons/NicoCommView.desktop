@@ -1,0 +1,10 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=NicoCommView
+Exec=~/Devel/NicoCommView/NicoCommView.py
+Icon=~/Devel/NicoCommView/icons/icon.png
+Comment=nico
+Categories=media
+Terminal=false
+
