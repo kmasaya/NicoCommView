@@ -21,6 +21,8 @@ class DBInitialize:
         self.db['setting']['comment_is_184'] = True  # 184でコメントするか
         self.db['setting']["hide_control_comment"] = False  # 管理コメントを非表示にする
 
+        self.db['setting']["comment_logging_is"] = True  # コメントのログを残す
+
         self.db['setting']['nickname_overwrite_is'] = True  # ニックネームの上書きを許可する
         self.db['setting']['nickname_overwrite_num_is'] = True  # ニックネームが数値の場合も上書きする
 
@@ -29,5 +31,6 @@ class DBInitialize:
         self.db['setting']['bg_ng_color'] = '#FFD7F6'  # NGのコメントカラー
 
         self.db['nickname'] = {}
+        self.db['log']
 
         self.db.sync()

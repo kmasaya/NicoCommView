@@ -240,6 +240,7 @@ class WinCom:
     live_connect_disconnect_enter_button = None
     live_connect_reconnect_enter_button = None
     comment_enter_184_checkbutton = None
+    comment_logging_checkbox = None
     comment_enter_entry = None
     comment_enter_button = None
     comment_tree_context_menu = None
@@ -249,7 +250,8 @@ class WinCom:
     setting_ownerbgcolor_change_color_entry = None
     setting_openlinkbrowser_entry = None
     setting_comment_enter_default_184_checkbox = None
-    setting_hide_control_comment = None
+    setting_hide_control_comment_checkbox = None
+    setting_comment_logging_checkbox = None
     setting_comment_enter_modifier_conbobox = None
     setting_cookiebrouser_conbobox = None
     clipboard = None
@@ -432,6 +434,9 @@ class WinCom:
         # 管理費表示デフォルト値
         self.setting_hide_control_comment_checkbox = gtk.CheckButton("管理コメントを非表示にする")
         setting_vbox.pack_start(self.setting_hide_control_comment_checkbox, False, False)
+        # 管理費表示デフォルト値
+        self.setting_comment_logging_checkbox = gtk.CheckButton("コメントをログに残す")
+        setting_vbox.pack_start(self.setting_comment_logging_checkbox, False, False)
         # コメント投稿のモディファイア
         setting_comment_enter_modifier_label = gtk.Label("コメント投稿モディファイア")
         setting_vbox.pack_start(setting_comment_enter_modifier_label, False, False)
@@ -527,6 +532,7 @@ class WinCom:
         self.setting_comment_enter_modifier_conbobox.set_active(self.db['setting']["comment_enter_modifier"])
         self.setting_comment_enter_default_184_checkbox.set_active(self.db['setting']["comment_is_184"])
         self.setting_hide_control_comment_checkbox.set_active(self.db['setting']['hide_control_comment'])
+        self.setting_comment_logging_checkbox.set_active(self.db['setting']['comment_logging_is'])
         self.setting_nickname_overwrite_checkbox.set_active(self.db['setting']["nickname_overwrite_is"])
         self.setting_nickname_num_overwrite_checkbox.set_active(self.db['setting']["nickname_overwrite_num_is"])
         self.setting_ownerbgcolor_change_checkbox.set_active(self.db['setting']["bg_owner_color_change_is"])
@@ -553,6 +559,12 @@ class WinCom:
             self.db['setting']["hide_control_comment"] = True
         else:
             self.db['setting']["hide_control_comment"] = False
+
+        # logging
+        if self.setting_comment_logging_checkbox.get_active():
+            self.db['setting']["comment_logging_is"] = True
+        else:
+            self.db['setting']["comment_logging_is"] = False
 
         # ニックネーム上書き
         if self.setting_nickname_overwrite_checkbox.get_active():
@@ -732,6 +744,12 @@ class WinCom:
 
         # ソケットの切断
         self.live.socket_disconnect()
+
+        if self.db['setting']['comment_logging_is']:
+            if self.live_id not in self.db['log']:
+                self.db['log'][self.live_id] = []
+            self.db['log'][self.live_id] += self.live.comments
+            self.db.sync()
 
         # 放送の削除
         del self.live
