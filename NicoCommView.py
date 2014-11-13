@@ -244,6 +244,11 @@ class WinCom:
     comment_enter_entry = None
     comment_enter_button = None
     comment_tree_context_menu = None
+    ng_user_tree = None
+    ng_user_tree_scroll = None
+    ng_user_control_nickname = None
+    ng_user_control_remove_all = None
+    ng_user_control_remove_select = None
     setting_nickname_overwrite_checkbox = None
     setting_nickname_num_overwrite_checkbox = None
     setting_ownerbgcolor_change_checkbox = None
@@ -394,10 +399,13 @@ class WinCom:
         comment_tree_context_menu_item_useropen.connect("activate", self.browser_open_user_page)
         comment_tree_context_menu_item_commentcopy = gtk.MenuItem("コメントをコピー")
         comment_tree_context_menu_item_commentcopy.connect("activate", self.CommentCopy)
+        comment_tree_context_menu_item_userng = gtk.MenuItem("NGに設定")
+        comment_tree_context_menu_item_userng.connect("activate", self.append_ng_user)
         self.comment_tree_context_menu.append(comment_tree_context_menu_item_nickname)
         self.comment_tree_context_menu.append(comment_tree_context_menu_item_linkopen)
         self.comment_tree_context_menu.append(comment_tree_context_menu_item_useropen)
         self.comment_tree_context_menu.append(comment_tree_context_menu_item_commentcopy)
+        self.comment_tree_context_menu.append(comment_tree_context_menu_item_userng)
         self.comment_tree_context_menu.show_all()
 
         # 設定タブ
@@ -459,11 +467,88 @@ class WinCom:
         setting_save_button.connect("clicked", self.setting_save)
         setting_vbox.pack_start(setting_save_button, False, False)
 
+        # NGユーザタブ
+        tab_ng_user_vbox = gtk.VBox()
+        tab_ng_user_label = gtk.Label("NG")
+        self.main_notebook.append_page(tab_ng_user_vbox, tab_ng_user_label)
+        # NGユーザツリー
+        self.ng_user_tree = gtk.TreeView(model=gtk.ListStore(str, str))
+        self.ng_user_tree.props.rules_hint = True
+        # コメント表示ツリーカラムナンバー
+        ng_user_tree_column_number = gtk.TreeViewColumn("", gtk.CellRendererText(), text=0)
+        ng_user_tree_column_number.set_sizing(gtk.TREE_VIEW_COLUMN_FIXED)
+        ng_user_tree_column_number.set_fixed_width(50)
+        # コメント表示ツリーカラムナンバー
+        ng_user_tree_column_username = gtk.TreeViewColumn("NG User", gtk.CellRendererText(), text=1)
+        ng_user_tree_column_username.set_sizing(gtk.TREE_VIEW_COLUMN_FIXED)
+        # ツリーにカラムを追加
+        self.ng_user_tree.append_column(ng_user_tree_column_number)
+        self.ng_user_tree.append_column(ng_user_tree_column_username)
+        # コメント表示ツリースクロール
+        self.ng_user_tree_scroll = gtk.ScrolledWindow()
+        self.ng_user_tree_scroll.set_policy(gtk.POLICY_AUTOMATIC, gtk.POLICY_AUTOMATIC)
+        self.ng_user_tree_scroll.add(self.ng_user_tree)
+        # コントロールボックス
+        ng_user_control_hbox = gtk.HBox()
+        self.ng_user_control_nickname = gtk.Button('ニックネーム')
+        self.ng_user_control_nickname.connect('clicked', self.ng_user_set_nickname)
+        self.ng_user_control_remove_all = gtk.Button('全解除')
+        self.ng_user_control_remove_all.connect("clicked", self.ng_user_remove_all)
+        self.ng_user_control_remove_select = gtk.Button('解除')
+        self.ng_user_control_remove_select.connect("clicked", self.ng_user_remove_select)
+        ng_user_control_hbox.pack_start(self.ng_user_control_nickname)
+        ng_user_control_hbox.pack_start(self.ng_user_control_remove_all)
+        ng_user_control_hbox.pack_start(self.ng_user_control_remove_select)
+        # tab
+        tab_ng_user_vbox.pack_start(self.ng_user_tree_scroll, True, True)
+        tab_ng_user_vbox.pack_start(ng_user_control_hbox, False, False)
+        self.ng_user_tree_refresh()
+
         # クリップボード
         self.clipboard = gtk.Clipboard()
 
         # ウインドウを表示
         self.main_window.show_all()
+
+    def ng_user_set_nickname(self, widget=None):
+        selection = self.ng_user_tree.get_selection()
+        (model, iter) = selection.get_selected()
+        line_num = int(model.get_value(iter, 0))
+
+        user_id = self.db['ng_users'][line_num-1]
+        nickname = self.db['nickname'][user_id] if user_id in self.db['nickname'] else ''
+
+        dlg = NicknameSettingDialog(title="ニックネーム設定", user_id=user_id, nick=nickname, flags=gtk.DIALOG_DESTROY_WITH_PARENT, buttons=(gtk.STOCK_CANCEL, gtk.RESPONSE_CANCEL, gtk.STOCK_OK, gtk.RESPONSE_OK))
+        resid = dlg.run()
+        if resid == gtk.RESPONSE_OK:
+            nickname = dlg.get_nickname()
+            self.save_nickname(user_id, nickname)
+        dlg.destroy()
+
+        self.ng_user_tree_refresh()
+
+    def ng_user_tree_refresh(self):
+        self.ng_user_tree.get_model().clear()
+        for line_num, user_id in enumerate(self.db['ng_users']):
+            line_num += 1
+            nickname = self.db['nickname'][user_id] if user_id in self.db['nickname'] else user_id
+            self.ng_user_tree.get_model().append((str(line_num), nickname),)
+
+    def ng_user_remove_all(self, widget=None):
+        self.db['ng_users'] = []
+        self.db.sync()
+
+        self.ng_user_tree_refresh()
+
+    def ng_user_remove_select(self, widget=None):
+        selection = self.ng_user_tree.get_selection()
+        (model, iter) = selection.get_selected()
+        line_num = int(model.get_value(iter, 0))
+
+        self.db['ng_users'].pop(line_num-1)
+        self.db.sync()
+
+        self.ng_user_tree_refresh()
 
     def live_enter(self, widget=None):
         # 接続中なら放送を切断
@@ -525,6 +610,20 @@ class WinCom:
 
         # コメントをクリップボードにコピー
         self.clipboard.set_text(comment)
+
+    def append_ng_user(self, widget=None):
+        selection = self.comment_tree.get_selection()
+        (model, iter) = selection.get_selected()
+        line_num = model.get_value(iter, 0)
+
+        for line in self.live.comments:
+            if line[0] == line_num:
+                user_id = line[1]
+                break
+
+        self.db['ng_users'].append(user_id)
+
+        self.ng_user_tree_refresh()
 
     def setting_load(self):
         # 設定の適応
@@ -806,7 +905,8 @@ class WinCom:
         # ツリーに追加
         while self.current_list_number < len(self.live.comments):
             # 名前を設定
-            name = self.pick_nickname(self.live.comments[self.current_list_number][1])
+            user_id = self.live.comments[self.current_list_number][1]
+            name = self.pick_nickname(user_id)
 
             # 時間を設定
             if self.live.comments[self.current_list_number][4].isdigit():
@@ -858,6 +958,8 @@ class WinCom:
 
             # ツリーに行を追加
             if self.db['setting']['hide_control_comment'] is True and comment.startswith('/hb'):
+                pass
+            elif user_id in self.db['ng_users']:
                 pass
             else:
                 self.comment_tree.get_model().append((no, name, comment, status_icon, time, color), )

@@ -31,6 +31,7 @@ class DBInitialize:
         self.db['setting']['bg_ng_color'] = '#FFD7F6'  # NGのコメントカラー
 
         self.db['nickname'] = {}
-        self.db['log']
+        self.db['log'] = {}
+        self.db['ng_users'] = []
 
         self.db.sync()
